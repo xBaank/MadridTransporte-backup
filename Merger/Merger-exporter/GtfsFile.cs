@@ -5,6 +5,8 @@ namespace Merger_exporter;
 
 internal class GtfsFile(string name, Stream stream) : IAsyncDisposable
 {
+    public string Name => name;
+
     private event Action? DisposeFiles;
 
     private async ValueTask<FileInfo> DownloadAsync(CancellationToken cancellationToken)
@@ -14,7 +16,7 @@ internal class GtfsFile(string name, Stream stream) : IAsyncDisposable
         using var fileStream = tempFile.Open(FileMode.Create);
         Console.WriteLine($"Using temp file {tempFileName}");
         await stream.CopyToAsync(fileStream, cancellationToken);
-        Console.WriteLine($"Downloaded {name} to {tempFileName}");
+        Console.WriteLine($"Downloaded {Name} to {tempFileName}");
         DisposeFiles += tempFile.Delete;
         return tempFile;
     }
@@ -32,7 +34,7 @@ internal class GtfsFile(string name, Stream stream) : IAsyncDisposable
         return tempFolder;
     }
 
-    public async IAsyncEnumerable<string> GetFoldersAsync(
+    public async IAsyncEnumerable<string> GetFoldersFilesAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
@@ -51,7 +53,7 @@ internal class GtfsFile(string name, Stream stream) : IAsyncDisposable
 
                     using var fileStream = File.Open(subGtfsFile, FileMode.Open);
                     var gtfsFile = new GtfsFile(Path.GetFileName(subGtfsFile), fileStream);
-                    await foreach (var item in gtfsFile.GetFoldersAsync(cancellationToken))
+                    await foreach (var item in gtfsFile.GetFoldersFilesAsync(cancellationToken))
                     {
                         yield return item;
                     }

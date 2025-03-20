@@ -1,5 +1,7 @@
 ﻿using System.Runtime.CompilerServices;
 
+using ConsoleAppFramework;
+
 using Merger_exporter;
 
 List<(string name, string url)> files =
@@ -30,45 +32,52 @@ List<(string name, string url)> files =
     ),
 ];
 
-var token = CreateGracefulCancelationToken();
-
-using var httpClient = new HttpClient();
-var gtfsFiles = await GetGtfsFilesAsync(token).ToListAsync();
-
-try
-{
-    foreach (var item in gtfsFiles)
+await ConsoleApp.RunAsync(
+    args,
+    async (CancellationToken token, string destinationFolder) =>
     {
-        var folders = await item.GetFoldersAsync(token).ToListAsync();
+        using var httpClient = new HttpClient();
+
+        async IAsyncEnumerable<GtfsFile> GetGtfsFilesAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken
+        )
+        {
+            foreach (var (name, url) in files)
+            {
+                var gtfsFile = new GtfsFile(
+                    name,
+                    await httpClient.GetStreamAsync(url, cancellationToken)
+                );
+                yield return gtfsFile;
+            }
+        }
+
+        var gtfsFiles = await GetGtfsFilesAsync(token).ToListAsync(cancellationToken: token);
+
+        try
+        {
+            foreach (var item in gtfsFiles)
+            {
+                var files = await item.GetFoldersFilesAsync(token)
+                    .ToListAsync(cancellationToken: token);
+                var grouped = files.GroupBy(i => i).ToList();
+
+                var folder = Directory.CreateDirectory(Path.Combine(destinationFolder, item.Name));
+
+                await using var merger = await Merger.CreateMergerAsync(
+                    files,
+                    folder.FullName,
+                    token
+                );
+                var destination = await merger.MergeAsync(token);
+            }
+        }
+        finally
+        {
+            foreach (var item in gtfsFiles)
+            {
+                await item.DisposeAsync();
+            }
+        }
     }
-}
-finally
-{
-    foreach (var item in gtfsFiles)
-    {
-        await item.DisposeAsync();
-    }
-}
-
-async IAsyncEnumerable<GtfsFile> GetGtfsFilesAsync(
-    [EnumeratorCancellation] CancellationToken cancellationToken
-)
-{
-    foreach (var (name, url) in files)
-    {
-        var gtfsFile = new GtfsFile(name, await httpClient.GetStreamAsync(url, token));
-        yield return gtfsFile;
-    }
-}
-
-static CancellationToken CreateGracefulCancelationToken()
-{
-    var cts = new CancellationTokenSource();
-    Console.CancelKeyPress += (s, e) =>
-    {
-        Console.WriteLine("Canceling...");
-        cts.Cancel();
-        e.Cancel = true;
-    };
-    return cts.Token;
-}
+);
