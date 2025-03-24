@@ -1,67 +1,94 @@
-﻿using System.Threading.Channels;
-
-using nietras.SeparatedValues;
+﻿using nietras.SeparatedValues;
 
 namespace Merger_exporter;
 
 class Merger(
-    List<IGrouping<string, string>> gtfsFilesByName,
     string destinationFolder,
-    List<SepReader> readers
-) : IAsyncDisposable
+    Dictionary<string, List<SepReader>> readersByFileName,
+    Dictionary<string, SepWriter> writersByFileName
+) : IDisposable
 {
-    Channel<string> WriteChannel { get; set; } = Channel.CreateUnbounded<string>();
-;    /*º
-     * Before reading, the files should be grouped by their name
-     * Then read the files in each group and write them into a channel, the channel reads from another process and writes into the final file
-     *
-     * */
     public static async Task<Merger> CreateMergerAsync(
         List<IGrouping<string, string>> gtfsFilesByName,
         string destinationFolder,
         CancellationToken cancellationToken
     )
     {
-        List<SepReader> readers = [];
+        Dictionary<string, List<SepReader>> readersByFileName = [];
+        Dictionary<string, SepWriter> writersByFileName = [];
 
         foreach (var gtfsFiles in gtfsFilesByName)
         {
-            foreach (var file in gtfsFiles)
+            var fileName = Path.GetFileName(gtfsFiles.Key);
+            var path = Path.Combine(destinationFolder, fileName);
+
+            if (!writersByFileName.ContainsKey(gtfsFiles.Key))
             {
-                var reader = await Sep.Reader().FromFileAsync(file, cancellationToken);
-                readers.Add(reader);
-                var a = reader.ParallelEnumerate(row =>
+                Console.WriteLine($"Creating writer for {path}");
+                writersByFileName[gtfsFiles.Key] = Sep.Writer().ToFile(path);
+            }
+
+            foreach (var gtfsFile in gtfsFiles)
+            {
+                var reader = await Sep.Reader(i =>
+                        i with
+                        {
+                            HasHeader = true,
+                            DisableQuotesParsing = true
+                        }
+                    )
+                    .FromFileAsync(gtfsFile, cancellationToken);
+                if (readersByFileName.TryGetValue(gtfsFiles.Key, out var value))
                 {
-                    for (var i = 0; i < row.ColCount; i++)
-                    {
-                        var colName = row[i];
-                        WriteChannel.Writer.WriteAsync(row.Span.ToString());
-                    }
-                });
+                    value.Add(reader);
+                }
+                else
+                {
+                    readersByFileName[gtfsFiles.Key] = [];
+                    readersByFileName[gtfsFiles.Key].Add(reader);
+                }
             }
         }
 
-        return new Merger(gtfsFilesByName, destinationFolder, readers);
+        return new Merger(destinationFolder, readersByFileName, writersByFileName);
     }
 
-    public async Task<string> MergeAsync(CancellationToken cancellationToken)
+    public async Task MergeAsync(CancellationToken cancellationToken)
     {
-        foreach (var item in gtfsFilesByName)
+        List<Task> tasks = [];
+        foreach (var (file, writer) in writersByFileName)
         {
-            Console.WriteLine($"Merging {item}");
-            await MergeAsync(item, cancellationToken);
+            var task = Task.Run(
+                async () => await MergeToFile(file, writer, cancellationToken),
+                cancellationToken
+            );
+            tasks.Add(task);
         }
-        return "";
+        await Task.WhenAll(tasks);
     }
 
-    private async Task MergeAsync(string gtfsFolder, CancellationToken cancellationToken) { }
-
-    public ValueTask DisposeAsync()
+    private async Task MergeToFile(
+        string file,
+        SepWriter writer,
+        CancellationToken cancellationToken
+    )
     {
-        foreach (var item in readers)
+        await using var _writer = writer;
+        var readers = readersByFileName[file];
+        foreach (var reader in readers)
         {
-            item.Dispose();
+            using var _reader = reader;
+
+            await foreach (var item in reader)
+            {
+                await using var row = writer.NewRow(item, cancellationToken: cancellationToken);
+            }
         }
-        return ValueTask.CompletedTask;
+        await writer.FlushAsync(cancellationToken);
+    }
+
+    public void Dispose()
+    {
+        Directory.Delete(destinationFolder, true);
     }
 }
