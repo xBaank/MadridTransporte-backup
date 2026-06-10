@@ -24,6 +24,7 @@ TRAM_URL = "https://hub.arcgis.com/api/download/v1/items/53c45916691a4256bf0f6f6
 
 POLL_INTERVAL_SECONDS = 30
 POLL_TIMEOUT_SECONDS = 15 * 60
+REQUEST_TIMEOUT = (10, 120)  # connect, read (seconds)
 
 
 def resolve_hub_download(url):
@@ -32,7 +33,7 @@ def resolve_hub_download(url):
     status_url = url.replace("redirect=true", "redirect=false")
     deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
     while True:
-        response = requests.get(status_url)
+        response = requests.get(status_url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         info = response.json()
         status = info.get("status")
@@ -49,7 +50,7 @@ def resolve_hub_download(url):
 def download_file(url, dest_path):
     if "hub.arcgis.com/api/download" in url:
         url = resolve_hub_download(url)
-    response = requests.get(url, allow_redirects=True)
+    response = requests.get(url, allow_redirects=True, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     with open(dest_path, "wb") as f:
         f.write(response.content)
