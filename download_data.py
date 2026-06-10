@@ -1,4 +1,6 @@
 import os
+import time
+
 import requests
 
 GTFS_FILES = [
@@ -20,7 +22,33 @@ TRAM_NAME = "Tram_stations"
 TRAM_URL = "https://hub.arcgis.com/api/download/v1/items/53c45916691a4256bf0f6f69fb0e182c/csv?redirect=true&layers=0"
 
 
+POLL_INTERVAL_SECONDS = 30
+POLL_TIMEOUT_SECONDS = 15 * 60
+
+
+def resolve_hub_download(url):
+    # The Hub download API regenerates stale exports on demand and returns a
+    # {"status": "Pending"} JSON until the file is ready, so poll until Completed.
+    status_url = url.replace("redirect=true", "redirect=false")
+    deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
+    while True:
+        response = requests.get(status_url)
+        response.raise_for_status()
+        info = response.json()
+        status = info.get("status")
+        if status == "Completed":
+            return info["resultUrl"]
+        if status not in ("Pending", "InProgress"):
+            raise RuntimeError(f"Unexpected download status for {url}: {info}")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Export not ready after {POLL_TIMEOUT_SECONDS}s: {url}")
+        print(f"Export pending, retrying in {POLL_INTERVAL_SECONDS}s: {url}")
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
 def download_file(url, dest_path):
+    if "hub.arcgis.com/api/download" in url:
+        url = resolve_hub_download(url)
     response = requests.get(url, allow_redirects=True)
     response.raise_for_status()
     with open(dest_path, "wb") as f:
